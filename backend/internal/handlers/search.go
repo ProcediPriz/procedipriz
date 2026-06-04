@@ -18,6 +18,7 @@ var procedures = loadProcedures()
 func RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/health", withCORS(health))
 	mux.HandleFunc("/api/procedures/search", withCORS(searchProcedures))
+	mux.HandleFunc("/api/procedures/get", withCORS(getProcedureByCode))
 	mux.HandleFunc("/api/calculate", withCORS(calculatePrice))
 }
 
@@ -48,6 +49,27 @@ func searchProcedures(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, results)
+}
+
+func getProcedureByCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "code parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	procedure, ok := procedureByCode(code)
+	if !ok {
+		http.Error(w, "procedure not found", http.StatusNotFound)
+		return
+	}
+
+	respondJSON(w, http.StatusOK, procedure)
 }
 
 func procedureByCode(code string) (generated.ProcedureSearchResult, bool) {

@@ -6,6 +6,8 @@ import {
   HeartPulse,
   Info,
   Moon,
+  Share2,
+  Check,
   Stethoscope,
   Sun,
 } from "lucide-react";
@@ -38,6 +40,7 @@ export default function Home() {
   const [requiresAnesthesia, setRequiresAnesthesia] = useState(true);
   const [calculation, setCalculation] = useState<Calculation | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setPorte(selectedProcedure?.porte ?? "");
@@ -61,6 +64,18 @@ export default function Home() {
   }, [searchQuery]);
 
   const canCalculate = useMemo(() => selectedProcedure !== null, [selectedProcedure]);
+
+  function shareCalculation() {
+    if (!selectedProcedure || !calculation) return;
+    const url = new URL("/share", window.location.origin);
+    url.searchParams.set("p", selectedProcedure.cbhpm_code);
+    url.searchParams.set("a", String(auxiliariesCount));
+    url.searchParams.set("an", requiresAnesthesia ? "1" : "0");
+    navigator.clipboard.writeText(url.toString()).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   async function calculate() {
     if (!selectedProcedure) return;
@@ -277,6 +292,22 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {/* Share button */}
+          {calculation && (
+            <button
+              id="share-calculation-btn"
+              onClick={shareCalculation}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-primary/25 px-4 py-3 text-sm font-semibold text-primary transition-all hover:bg-primary/5 active:scale-[0.98] dark:border-teal-300/20 dark:text-teal-300"
+              type="button"
+            >
+              {copied ? (
+                <><Check size={16} /> Link copiado!</>
+              ) : (
+                <><Share2 size={16} /> Compartilhar cálculo</>
+              )}
+            </button>
+          )}
 
           {/* Disclaimer */}
           <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/50 p-3">
