@@ -60,9 +60,9 @@ function Section({
   className?: string;
 }) {
   return (
-    <section className={cn("border-b border-slate-100 bg-white px-8 py-10 sm:px-12", className)}>
+    <section className={cn("border-b border-slate-100 bg-white px-8 py-14 sm:px-12 sm:py-16", className)}>
       {label && (
-        <p className="mb-6 text-[9px] font-bold uppercase tracking-[0.22em] text-slate-400">{label}</p>
+        <p className="mb-8 text-[9px] font-bold uppercase tracking-[0.22em] text-slate-400">{label}</p>
       )}
       {children}
     </section>
@@ -115,12 +115,12 @@ function BreakdownLine({
 
 function TeamCard({ role, note, value }: { role: string; note?: string; value: number }) {
   return (
-    <div className="rounded-xl bg-white p-5 ring-1 ring-slate-200/80 shadow-[0_1px_4px_rgba(0,0,0,0.06)]">
+    <div className="rounded-xl bg-white p-6 ring-1 ring-slate-200/80 shadow-[0_1px_4px_rgba(0,0,0,0.06)]">
       <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400">
         {role}
         {note && <span className="ml-2 text-teal-700">{note}</span>}
       </p>
-      <p className="mt-3 font-grotesk text-[20px] font-bold leading-none tracking-tight text-slate-900">
+      <p className="mt-4 font-grotesk text-[20px] font-bold leading-none tracking-tight text-slate-900">
         {money.format(value)}
       </p>
     </div>
@@ -240,7 +240,7 @@ function ShareContent() {
         <h2 className="m-0 text-[22px] font-extrabold leading-tight tracking-tight text-slate-900 sm:text-[26px]">
           {procedure?.name ?? "—"}
         </h2>
-        <div className="mt-7 flex flex-wrap gap-x-10 gap-y-4">
+        <div className="mt-10 flex flex-wrap gap-x-12 gap-y-5">
           <MetaItem
             label="Via de acesso"
             value={accessRoute === "same" ? "Mesma via" : "Vias diferentes"}
@@ -266,7 +266,7 @@ function ShareContent() {
                   <th
                     key={h}
                     className={cn(
-                      "pb-3 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400",
+                      "pb-4 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-400",
                       i >= 2 && "text-right",
                     )}
                   >
@@ -284,7 +284,7 @@ function ShareContent() {
                     idx % 2 === 1 && "bg-slate-50/40",
                   )}
                 >
-                  <td className="py-3.5 pr-5">
+                  <td className="py-5 pr-5">
                     <span className="font-mono text-[11px] text-slate-500">{b.cbhpm_code}</span>
                     {b.is_principal && (
                       <span className="ml-2 rounded-sm bg-teal-900/[0.06] px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-teal-700 ring-1 ring-teal-600/20">
@@ -292,9 +292,9 @@ function ShareContent() {
                       </span>
                     )}
                   </td>
-                  <td className="py-3.5 pr-6 text-[12px] leading-snug text-slate-600">{b.description}</td>
-                  <td className="py-3.5 text-right text-[12px] font-semibold text-slate-600">{b.porte}</td>
-                  <td className="py-3.5 pl-5 text-right font-grotesk text-[13px] font-semibold tabular-nums text-slate-900">
+                  <td className="py-5 pr-6 text-[12px] leading-snug text-slate-600">{b.description}</td>
+                  <td className="py-5 text-right text-[12px] font-semibold text-slate-600">{b.porte}</td>
+                  <td className="py-5 pl-5 text-right font-grotesk text-[13px] font-semibold tabular-nums text-slate-900">
                     {money.format(b.base_value)}
                   </td>
                 </tr>
@@ -304,13 +304,13 @@ function ShareContent() {
         </div>
 
         {hasMultiProcedure && calculation && (
-          <div className="mt-7 overflow-hidden rounded-xl border border-slate-100">
-            <div className="border-b border-slate-100 bg-slate-50/70 px-5 py-3">
+          <div className="mt-10 overflow-hidden rounded-xl border border-slate-100">
+            <div className="border-b border-slate-100 bg-slate-50/70 px-5 py-3.5">
               <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-slate-400">
                 Detalhamento do cirurgião
               </p>
             </div>
-            <div className="space-y-2 bg-white px-5 py-4">
+            <div className="space-y-3 bg-white px-5 py-5">
               <BreakdownLine
                 label="Procedimento principal"
                 value={money.format(calculation.surgeon_breakdown.principal_value)}
@@ -340,7 +340,7 @@ function ShareContent() {
       {/* ── 3. Team cards ────────────────────────────────────── */}
       {hasTeam && calculation && (
         <Section label="Equipe Cirúrgica">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <TeamCard role="Cirurgião Principal" value={calculation.lead_surgeon_fee} />
             {calculation.individual_auxiliary_fees.map((af) => (
               <TeamCard
@@ -360,16 +360,16 @@ function ShareContent() {
       {/* ── 4. Total da equipe — subtle dark summary ─────────── */}
       {calculation && (
         <section
-          className="border-b border-slate-700/30 px-8 py-10 sm:px-12"
+          className="border-b border-slate-700/30 px-8 py-14 sm:px-12 sm:py-16"
           style={{ background: "#1e293b" }}
         >
           <p className="text-[9px] font-bold uppercase tracking-[0.22em] text-slate-300">
             Total da Equipe
           </p>
-          <p className="mt-3 font-grotesk text-[40px] font-bold leading-none tracking-tight text-white sm:text-[48px]">
+          <p className="mt-4 font-grotesk text-[40px] font-bold leading-none tracking-tight text-white sm:text-[48px]">
             {money.format(calculation.final_total)}
           </p>
-          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1.5">
+          <div className="mt-6 flex flex-wrap gap-x-6 gap-y-2">
             <SummaryPill label="Cirurgião" value={money.format(calculation.lead_surgeon_fee)} />
             {calculation.auxiliaries_fee > 0 && (
               <SummaryPill label="Auxiliares" value={money.format(calculation.auxiliaries_fee)} />
@@ -381,13 +381,13 @@ function ShareContent() {
               />
             )}
           </div>
-          <p className="mt-5 text-[10px] tracking-wide text-slate-400">{ruleNote}</p>
+          <p className="mt-7 text-[10px] tracking-wide text-slate-400">{ruleNote}</p>
         </section>
       )}
 
       {/* ── 5. Metodologia ────────────────────────────────────── */}
       <Section label="Metodologia" className="border-b-0 bg-slate-50/60">
-        <div className="space-y-3 text-[13px] leading-relaxed text-slate-500">
+        <div className="space-y-4 text-[13px] leading-relaxed text-slate-500">
           <p>
             Valores calculados com base na{" "}
             <strong className="font-semibold text-slate-700">
@@ -420,7 +420,7 @@ function ShareContent() {
               3º e 4º auxiliar, respectivamente.
             </p>
           )}
-          <div className="mt-5 flex items-start gap-2.5 rounded-lg border border-slate-100 bg-white px-4 py-3">
+          <div className="mt-7 flex items-start gap-2.5 rounded-lg border border-slate-100 bg-white px-4 py-3.5">
             <Info size={13} className="mt-0.5 shrink-0 text-slate-300" aria-hidden="true" />
             <p className="m-0 text-[12px] leading-relaxed text-slate-400">
               Valores de referência. Convênios e operadoras de saúde podem adotar tabelas e faixas
@@ -465,7 +465,7 @@ export default function SharePage() {
         style={{ boxShadow: "0 4px 32px rgba(0,0,0,0.07), 0 2px 8px rgba(0,0,0,0.04)" }}
       >
         {/* Report header */}
-        <header className="flex items-center justify-between border-b border-slate-100 px-8 py-6 sm:px-12">
+        <header className="flex items-center justify-between border-b border-slate-100 px-8 py-7 sm:px-12">
           <div className="flex items-center gap-3.5">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-800">
               <Activity className="text-white" size={17} aria-hidden="true" />
@@ -499,7 +499,7 @@ export default function SharePage() {
         </Suspense>
 
         {/* Report footer */}
-        <footer className="flex items-center justify-between border-t border-slate-100 bg-white px-8 py-6 sm:px-12">
+        <footer className="flex items-center justify-between border-t border-slate-100 bg-white px-8 py-7 sm:px-12">
           <p className="text-[11px] text-slate-400">
             <span className="font-semibold text-slate-500">Afere</span> · LabF5 · {year}
           </p>
