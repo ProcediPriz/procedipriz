@@ -80,6 +80,212 @@ func (r *PostgresRepository) Search(query string) ([]models.SBNProcedure, error)
 	return results, rows.Err()
 }
 
+// ── Physician accounts ─────────────────────────────────────────────────────────
+
+// FindOrCreatePhysician upserts a physician_accounts row by clerk_user_id.
+// On conflict (same clerk_user_id) it returns the existing record unchanged.
+func (r *PostgresRepository) FindOrCreatePhysician(clerkUserID, email, name string) (*models.PhysicianAccount, error) {
+	ctx := context.Background()
+	var p models.PhysicianAccount
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO physician_accounts (clerk_user_id, email, name)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (clerk_user_id) DO UPDATE
+			SET updated_at = now()
+		RETURNING id::text, clerk_user_id, COALESCE(email, ''), COALESCE(name, ''), created_at, updated_at
+	`, clerkUserID, email, name).Scan(
+		&p.ID, &p.ClerkUserID, &p.Email, &p.Name, &p.CreatedAt, &p.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: find or create physician: %w", err)
+	}
+	return &p, nil
+}
+
+// ── Composition CRUD ──────────────────────────────────────────────────────────
+
+// SaveComposition inserts a new composition row owned by physicianID.
+func (r *PostgresRepository) SaveComposition(comp models.Composition, physicianID string) (*models.Composition, error) {
+	publicID, err := models.GeneratePublicID()
+	if err != nil {
+		return nil, fmt.Errorf("postgres: generate public id: %w", err)
+	}
+
+	codesJSON, err := json.Marshal(comp.SelectedCodes)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: marshal selected codes: %w", err)
+	}
+
+	ctx := context.Background()
+	err = r.pool.QueryRow(ctx, `
+		INSERT INTO compositions (
+			public_id, physician_id, name, sbn_procedure_id, sbn_procedure_name,
+			selected_codes, access_route_type, auxiliaries_count, requires_anesthesia
+		) VALUES (
+			$1::uuid, $2::uuid, $3, $4, $5, $6::jsonb, $7, $8, $9
+		)
+		RETURNING id::text, created_at, updated_at
+	`,
+		publicID,
+		physicianID,
+		comp.Name,
+		comp.SBNProcedureID,
+		comp.SBNProcedureName,
+		string(codesJSON),
+		string(comp.AccessRouteType),
+		comp.AuxiliariesCount,
+		comp.RequiresAnesthesia,
+	).Scan(&comp.ID, &comp.CreatedAt, &comp.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: save composition: %w", err)
+	}
+
+	comp.PublicID = publicID
+	comp.PhysicianID = physicianID
+	return &comp, nil
+}
+
+// ListCompositions returns up to 100 compositions owned by physicianID, newest-first.
+func (r *PostgresRepository) ListCompositions(physicianID string) ([]models.CompositionSummary, error) {
+	ctx := context.Background()
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			public_id::text, name,
+			COALESCE(sbn_procedure_id, ''), sbn_procedure_name,
+			access_route_type, auxiliaries_count, requires_anesthesia, created_at
+		FROM compositions
+		WHERE physician_id = $1::uuid
+		ORDER BY created_at DESC
+		LIMIT 100
+	`, physicianID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list compositions: %w", err)
+	}
+	defer rows.Close()
+
+	var results []models.CompositionSummary
+	for rows.Next() {
+		var s models.CompositionSummary
+		var accessRoute string
+		if err := rows.Scan(
+			&s.PublicID, &s.Name,
+			&s.SBNProcedureID, &s.SBNProcedureName,
+			&accessRoute, &s.AuxiliariesCount, &s.RequiresAnesthesia, &s.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("postgres: list compositions scan: %w", err)
+		}
+		s.AccessRouteType = models.AccessRouteType(accessRoute)
+		results = append(results, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if results == nil {
+		results = []models.CompositionSummary{}
+	}
+	return results, nil
+}
+
+// GetCompositionByPublicID retrieves a composition by public UUID only when it belongs to physicianID.
+// Returns nil, nil when not found or when physician does not match.
+func (r *PostgresRepository) GetCompositionByPublicID(publicID, physicianID string) (*models.Composition, error) {
+	ctx := context.Background()
+
+	var comp models.Composition
+	var codesJSON []byte
+	var accessRoute string
+
+	err := r.pool.QueryRow(ctx, `
+		SELECT
+			id::text, public_id::text, name,
+			COALESCE(sbn_procedure_id, ''), sbn_procedure_name,
+			selected_codes, access_route_type,
+			auxiliaries_count, requires_anesthesia,
+			created_at, updated_at
+		FROM compositions
+		WHERE public_id = $1 AND physician_id = $2::uuid
+	`, publicID, physicianID).Scan(
+		&comp.ID, &comp.PublicID, &comp.Name,
+		&comp.SBNProcedureID, &comp.SBNProcedureName,
+		&codesJSON, &accessRoute,
+		&comp.AuxiliariesCount, &comp.RequiresAnesthesia,
+		&comp.CreatedAt, &comp.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: get composition: %w", err)
+	}
+
+	if err := json.Unmarshal(codesJSON, &comp.SelectedCodes); err != nil {
+		return nil, fmt.Errorf("postgres: unmarshal selected codes: %w", err)
+	}
+	comp.AccessRouteType = models.AccessRouteType(accessRoute)
+	comp.PhysicianID = physicianID
+	return &comp, nil
+}
+
+// UpdateComposition replaces a composition's editable fields only when it belongs to physicianID.
+// Returns nil, nil when not found or physician does not match.
+func (r *PostgresRepository) UpdateComposition(publicID string, comp models.Composition, physicianID string) (*models.Composition, error) {
+	codesJSON, err := json.Marshal(comp.SelectedCodes)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: marshal selected codes: %w", err)
+	}
+
+	ctx := context.Background()
+	err = r.pool.QueryRow(ctx, `
+		UPDATE compositions SET
+			name                = $3,
+			sbn_procedure_id    = $4,
+			sbn_procedure_name  = $5,
+			selected_codes      = $6::jsonb,
+			access_route_type   = $7,
+			auxiliaries_count   = $8,
+			requires_anesthesia = $9,
+			updated_at          = now()
+		WHERE public_id = $1 AND physician_id = $2::uuid
+		RETURNING id::text, public_id::text, created_at, updated_at
+	`,
+		publicID,
+		physicianID,
+		comp.Name,
+		comp.SBNProcedureID,
+		comp.SBNProcedureName,
+		string(codesJSON),
+		string(comp.AccessRouteType),
+		comp.AuxiliariesCount,
+		comp.RequiresAnesthesia,
+	).Scan(&comp.ID, &comp.PublicID, &comp.CreatedAt, &comp.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: update composition: %w", err)
+	}
+
+	comp.PhysicianID = physicianID
+	comp.AccessRouteType = models.AccessRouteType(comp.AccessRouteType)
+	return &comp, nil
+}
+
+// DeleteCompositionByPublicID removes a composition only when it belongs to physicianID.
+// Returns (true, nil) when deleted, (false, nil) when not found or physician mismatch.
+func (r *PostgresRepository) DeleteCompositionByPublicID(publicID, physicianID string) (bool, error) {
+	ctx := context.Background()
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM compositions WHERE public_id = $1 AND physician_id = $2::uuid`,
+		publicID, physicianID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("postgres: delete composition: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ── Calculation snapshot persistence (legacy) ─────────────────────────────────
+
 // SaveCalculation inserts a new calculation row and returns the record with its
 // generated UUID, public_id, and created_at populated from the database.
 func (r *PostgresRepository) SaveCalculation(calc models.Calculation) (*models.Calculation, error) {
@@ -208,179 +414,6 @@ func (r *PostgresRepository) GetCalculationByPublicID(publicID string) (*models.
 	calc.BreakdownJSON = json.RawMessage(breakdownJSON)
 	return &calc, nil
 }
-
-// ── Composition CRUD ──────────────────────────────────────────────────────────
-
-// SaveComposition inserts a new composition row and returns the populated record.
-func (r *PostgresRepository) SaveComposition(comp models.Composition) (*models.Composition, error) {
-	publicID, err := models.GeneratePublicID()
-	if err != nil {
-		return nil, fmt.Errorf("postgres: generate public id: %w", err)
-	}
-
-	codesJSON, err := json.Marshal(comp.SelectedCodes)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: marshal selected codes: %w", err)
-	}
-
-	ctx := context.Background()
-	err = r.pool.QueryRow(ctx, `
-		INSERT INTO compositions (
-			public_id, name, sbn_procedure_id, sbn_procedure_name,
-			selected_codes, access_route_type, auxiliaries_count, requires_anesthesia
-		) VALUES (
-			$1::uuid, $2, $3, $4, $5::jsonb, $6, $7, $8
-		)
-		RETURNING id::text, created_at, updated_at
-	`,
-		publicID,
-		comp.Name,
-		comp.SBNProcedureID,
-		comp.SBNProcedureName,
-		string(codesJSON),
-		string(comp.AccessRouteType),
-		comp.AuxiliariesCount,
-		comp.RequiresAnesthesia,
-	).Scan(&comp.ID, &comp.CreatedAt, &comp.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: save composition: %w", err)
-	}
-
-	comp.PublicID = publicID
-	return &comp, nil
-}
-
-// ListCompositions returns up to 100 compositions ordered newest-first.
-func (r *PostgresRepository) ListCompositions() ([]models.CompositionSummary, error) {
-	ctx := context.Background()
-	rows, err := r.pool.Query(ctx, `
-		SELECT
-			public_id::text, name,
-			COALESCE(sbn_procedure_id, ''), sbn_procedure_name,
-			access_route_type, auxiliaries_count, requires_anesthesia, created_at
-		FROM compositions
-		ORDER BY created_at DESC
-		LIMIT 100
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: list compositions: %w", err)
-	}
-	defer rows.Close()
-
-	var results []models.CompositionSummary
-	for rows.Next() {
-		var s models.CompositionSummary
-		var accessRoute string
-		if err := rows.Scan(
-			&s.PublicID, &s.Name,
-			&s.SBNProcedureID, &s.SBNProcedureName,
-			&accessRoute, &s.AuxiliariesCount, &s.RequiresAnesthesia, &s.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("postgres: list compositions scan: %w", err)
-		}
-		s.AccessRouteType = models.AccessRouteType(accessRoute)
-		results = append(results, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if results == nil {
-		results = []models.CompositionSummary{}
-	}
-	return results, nil
-}
-
-// GetCompositionByPublicID retrieves a composition by its public UUID. Returns nil, nil when not found.
-func (r *PostgresRepository) GetCompositionByPublicID(publicID string) (*models.Composition, error) {
-	ctx := context.Background()
-
-	var comp models.Composition
-	var codesJSON []byte
-	var accessRoute string
-
-	err := r.pool.QueryRow(ctx, `
-		SELECT
-			id::text, public_id::text, name,
-			COALESCE(sbn_procedure_id, ''), sbn_procedure_name,
-			selected_codes, access_route_type,
-			auxiliaries_count, requires_anesthesia,
-			created_at, updated_at
-		FROM compositions
-		WHERE public_id = $1
-	`, publicID).Scan(
-		&comp.ID, &comp.PublicID, &comp.Name,
-		&comp.SBNProcedureID, &comp.SBNProcedureName,
-		&codesJSON, &accessRoute,
-		&comp.AuxiliariesCount, &comp.RequiresAnesthesia,
-		&comp.CreatedAt, &comp.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("postgres: get composition: %w", err)
-	}
-
-	if err := json.Unmarshal(codesJSON, &comp.SelectedCodes); err != nil {
-		return nil, fmt.Errorf("postgres: unmarshal selected codes: %w", err)
-	}
-	comp.AccessRouteType = models.AccessRouteType(accessRoute)
-	return &comp, nil
-}
-
-// UpdateComposition replaces a composition's editable fields. Returns nil, nil when not found.
-func (r *PostgresRepository) UpdateComposition(publicID string, comp models.Composition) (*models.Composition, error) {
-	codesJSON, err := json.Marshal(comp.SelectedCodes)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: marshal selected codes: %w", err)
-	}
-
-	ctx := context.Background()
-	err = r.pool.QueryRow(ctx, `
-		UPDATE compositions SET
-			name                = $2,
-			sbn_procedure_id    = $3,
-			sbn_procedure_name  = $4,
-			selected_codes      = $5::jsonb,
-			access_route_type   = $6,
-			auxiliaries_count   = $7,
-			requires_anesthesia = $8,
-			updated_at          = now()
-		WHERE public_id = $1
-		RETURNING id::text, public_id::text, created_at, updated_at
-	`,
-		publicID,
-		comp.Name,
-		comp.SBNProcedureID,
-		comp.SBNProcedureName,
-		string(codesJSON),
-		string(comp.AccessRouteType),
-		comp.AuxiliariesCount,
-		comp.RequiresAnesthesia,
-	).Scan(&comp.ID, &comp.PublicID, &comp.CreatedAt, &comp.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("postgres: update composition: %w", err)
-	}
-
-	comp.SelectedCodes = comp.SelectedCodes
-	comp.AccessRouteType = models.AccessRouteType(comp.AccessRouteType)
-	return &comp, nil
-}
-
-// DeleteCompositionByPublicID removes a composition row. Returns (true, nil) when deleted.
-func (r *PostgresRepository) DeleteCompositionByPublicID(publicID string) (bool, error) {
-	ctx := context.Background()
-	tag, err := r.pool.Exec(ctx, `DELETE FROM compositions WHERE public_id = $1`, publicID)
-	if err != nil {
-		return false, fmt.Errorf("postgres: delete composition: %w", err)
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-// ── Calculation snapshot persistence (legacy) ─────────────────────────────────
 
 // DeleteCalculationByPublicID deletes the calculation row identified by public_id.
 // Returns (true, nil) when a row was deleted, (false, nil) when no row matched.

@@ -16,25 +16,34 @@ type Repository interface {
 	// GetByID returns the full procedure package (SBN metadata + suggested CBHPM codes).
 	GetByID(id string) (*models.ProcedureWithCodes, error)
 
+	// ── Physician accounts ─────────────────────────────────────────────────────
+
+	// FindOrCreatePhysician looks up the physician with the given Clerk user ID,
+	// creating a new record if one does not exist. email and name are only applied
+	// on creation; subsequent calls with the same clerkUserID return the existing record.
+	FindOrCreatePhysician(clerkUserID, email, name string) (*models.PhysicianAccount, error)
+
 	// ── Compositions (primary persistence model) ──────────────────────────────
 
-	// SaveComposition persists a new composition and returns it with ID and timestamps populated.
-	SaveComposition(comp models.Composition) (*models.Composition, error)
+	// SaveComposition persists a new composition owned by physicianID
+	// and returns it with ID and timestamps populated.
+	SaveComposition(comp models.Composition, physicianID string) (*models.Composition, error)
 
-	// ListCompositions returns all compositions ordered newest-first (up to 100).
-	ListCompositions() ([]models.CompositionSummary, error)
+	// ListCompositions returns compositions owned by physicianID, newest-first (up to 100).
+	ListCompositions(physicianID string) ([]models.CompositionSummary, error)
 
-	// GetCompositionByPublicID retrieves a composition by its public UUID.
-	// Returns nil, nil when not found.
-	GetCompositionByPublicID(publicID string) (*models.Composition, error)
+	// GetCompositionByPublicID retrieves a composition by its public UUID,
+	// returning nil, nil when not found or when it does not belong to physicianID.
+	GetCompositionByPublicID(publicID, physicianID string) (*models.Composition, error)
 
-	// UpdateComposition replaces a composition's editable fields by public ID.
-	// Returns nil, nil when not found.
-	UpdateComposition(publicID string, comp models.Composition) (*models.Composition, error)
+	// UpdateComposition replaces a composition's editable fields by public ID,
+	// only when the composition belongs to physicianID.
+	// Returns nil, nil when not found or when ownership does not match.
+	UpdateComposition(publicID string, comp models.Composition, physicianID string) (*models.Composition, error)
 
-	// DeleteCompositionByPublicID removes a composition. Returns (true, nil) when
-	// deleted, (false, nil) when not found.
-	DeleteCompositionByPublicID(publicID string) (bool, error)
+	// DeleteCompositionByPublicID removes a composition owned by physicianID.
+	// Returns (true, nil) when deleted, (false, nil) when not found or wrong owner.
+	DeleteCompositionByPublicID(publicID, physicianID string) (bool, error)
 
 	// ── Calculations (legacy snapshot persistence) ────────────────────────────
 

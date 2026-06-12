@@ -12,6 +12,7 @@ The system is composed of:
 - Go backend (Render)
 - Embedded procedure catalog (procedures.json, fallback)
 - PostgreSQL via Neon (production data layer)
+- **Clerk** — authentication provider (v2.4.0)
 
 ## High-Level Architecture
 
@@ -38,9 +39,12 @@ flowchart TD
     FE -->|GET /api/procedures/search| API
     FE -->|GET /api/procedures/:id| API
     FE -->|POST /api/calculate| API
+    FE -->|Bearer JWT — composition CRUD| API
 
     API -->|DATABASE_URL set| DB
     API -->|fallback| JSON
+    API -->|validate JWT| Clerk[Clerk JWKS]
+    FE -->|sign-in / UserButton| Clerk
 ```
 
 ## Components
@@ -76,20 +80,70 @@ Responsibilities:
 - Provide fallback catalog via embedded `procedures.json`
 - Store porte values (seeded via migration 002)
 
+## Authentication (v2.4.0)
+
+### Provider
+
+**Clerk** is the authentication provider. It handles identity (Google OAuth, email magic link), session management, and JWT issuance. Afere does not store passwords or issue its own tokens.
+
+### Flow
+
+1. The physician signs in via Clerk (hosted modal, `<SignInButton>`).
+2. Clerk issues a short-lived RS256 JWT (session token).
+3. The frontend calls `useAuth().getToken()` and attaches `Authorization: Bearer <token>` to every composition API request.
+4. The Go backend validates the JWT against Clerk's JWKS endpoint (`CLERK_JWKS_URL`), verifies the issuer (`CLERK_ISSUER`), and verifies expiration. Unsigned or expired tokens are rejected with 401.
+5. The `sub` claim (Clerk user ID) is used to look up or create a row in `physician_accounts` via `FindOrCreatePhysician`.
+6. The physician's internal UUID is injected into the request context. All composition queries are scoped by this UUID.
+
+### Scope boundary
+
+| Route | Auth required |
+|---|---|
+| `GET /api/procedures/search` | No |
+| `GET /api/procedures/:id` | No |
+| `POST /api/calculate` | No |
+| `GET /api/health` | No |
+| `/share?…` (shared report page) | No |
+| `POST /api/compositions` | Yes |
+| `GET /api/compositions` | Yes |
+| `GET /api/compositions/:id` | Yes |
+| `PUT /api/compositions/:id` | Yes |
+| `DELETE /api/compositions/:id` | Yes |
+
+### `physician_accounts` table
+
+Maps a Clerk identity to an Afere physician record. `FindOrCreatePhysician` upserts on `clerk_user_id`, ensuring exactly one internal UUID per Clerk account.
+
+```
+physician_accounts
+  id            UUID PK (gen_random_uuid())
+  clerk_user_id TEXT UNIQUE NOT NULL   — JWT sub claim
+  email         TEXT                   — populated from Clerk profile (optional)
+  name          TEXT                   — populated from Clerk profile (optional)
+  created_at    TIMESTAMPTZ
+  updated_at    TIMESTAMPTZ
+```
+
+### Out of scope for v2.4.0
+
+Subscriptions, billing, organizations, teams, roles, admin dashboard, and multi-tenant clinics are explicitly not implemented.
+
+---
+
 ## Backend Package Layout
 
 ```
 backend/
   cmd/api/main.go          entry point; env-aware repo selection
   internal/
-    config/                reads DATABASE_URL + PORT env vars
-    models/                domain types
+    config/                reads DATABASE_URL + PORT + CLERK_* env vars
+    models/                domain types (incl. PhysicianAccount)
     repository/            interface + file + postgres implementations
     service/               pure calculation functions
-    handlers/              HTTP handlers + routes
+    handlers/              HTTP handlers + routes + Clerk JWT middleware
     generated/             openapi.gen.go (hand-maintained, matches openapi.yaml)
   db/
-    migrations/            001_schema, 002_seed_portes, 003_seed_procedures, …
+    migrations/            001–010 (009: physician_accounts, 010: compositions FK)
     query.sql              canonical SQL for PostgresRepository
 ```
 

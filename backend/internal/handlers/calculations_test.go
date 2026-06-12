@@ -12,6 +12,10 @@ import (
 	"afere/backend/internal/repository"
 )
 
+// noopAuth is a passthrough AuthMiddlewareFunc for endpoints that do not require authentication.
+// Calculation endpoints are public; the auth middleware value is not applied to them.
+var noopAuth handlers.AuthMiddlewareFunc = func(h http.Handler) http.Handler { return h }
+
 // minimalValidRequest returns a SaveCalculationRequest that passes all validation.
 func minimalValidRequest() generated.SaveCalculationRequest {
 	return generated.SaveCalculationRequest{
@@ -37,7 +41,7 @@ func postCalculation(t *testing.T, repo *repository.FileRepository, body any) *h
 		t.Fatalf("marshal request: %v", err)
 	}
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, noopAuth)
 	req := httptest.NewRequest(http.MethodPost, "/api/calculations", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -48,7 +52,7 @@ func postCalculation(t *testing.T, repo *repository.FileRepository, body any) *h
 func getCalculation(t *testing.T, repo *repository.FileRepository, publicID string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, noopAuth)
 	req := httptest.NewRequest(http.MethodGet, "/api/calculations/"+publicID, nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -128,7 +132,7 @@ func TestSaveCalculation_IncompleteResult(t *testing.T) {
 func TestCalculations_MethodNotAllowed(t *testing.T) {
 	repo := repository.NewFileRepository()
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, noopAuth)
 	req := httptest.NewRequest(http.MethodDelete, "/api/calculations", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -140,7 +144,7 @@ func TestCalculations_MethodNotAllowed(t *testing.T) {
 func listCalculations(t *testing.T, repo *repository.FileRepository) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, noopAuth)
 	req := httptest.NewRequest(http.MethodGet, "/api/calculations", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -239,7 +243,7 @@ func TestGetCalculation_NotFound(t *testing.T) {
 func deleteCalculation(t *testing.T, repo *repository.FileRepository, publicID string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, noopAuth)
 	req := httptest.NewRequest(http.MethodDelete, "/api/calculations/"+publicID, nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -287,7 +291,7 @@ func TestDeleteCalculation_MethodNotAllowed(t *testing.T) {
 	_ = json.NewDecoder(pw.Body).Decode(&saveResp)
 
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, noopAuth)
 	req := httptest.NewRequest(http.MethodPatch, "/api/calculations/"+saveResp.PublicID, nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

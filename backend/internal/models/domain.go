@@ -124,6 +124,17 @@ type CalculationSummary struct {
 	CreatedAt             time.Time
 }
 
+// PhysicianAccount maps a Clerk identity to an Afere physician record.
+// The internal id is the FK used in compositions; clerk_user_id is the JWT sub.
+type PhysicianAccount struct {
+	ID          string
+	ClerkUserID string
+	Email       string
+	Name        string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 // Composition is a reusable surgical template created by the physician.
 // It captures the procedural setup — SBN procedure, selected CBHPM codes,
 // access route, anesthesia, and auxiliary count — without storing any
@@ -131,6 +142,7 @@ type CalculationSummary struct {
 type Composition struct {
 	ID                 string
 	PublicID           string
+	PhysicianID        string // internal UUID from physician_accounts; empty only in legacy rows
 	Name               string
 	SBNProcedureID     string
 	SBNProcedureName   string

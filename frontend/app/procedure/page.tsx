@@ -7,6 +7,7 @@ import {
   Check,
   HeartPulse,
   Info,
+  LogIn,
   Moon,
   Route,
   Share2,
@@ -17,6 +18,7 @@ import {
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
 import { Autocomplete, type SBNProcedureOption } from "@/components/ui/autocomplete";
 import { Toggle } from "@/components/ui/toggle";
 import { useTheme } from "@/components/theme-provider";
@@ -85,6 +87,7 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
   initialCompositionId: string;
 }) {
   const { isDark, toggle } = useTheme();
+  const { isLoaded, isSignedIn, getToken } = useAuth();
 
   const [searchOptions, setSearchOptions] = useState<SBNProcedureOption[]>([]);
   const [searchQuery, setSearchQuery] = useState(initialQuery);
@@ -161,37 +164,43 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
   }, [searchQuery]);
 
   // ── Load composition from ?composition=<public_id> ────────────────────────
+  // Waits for Clerk auth to be ready so the Bearer token is available.
 
   useEffect(() => {
-    if (!initialCompositionId) return;
-    fetch(`/api/compositions/${initialCompositionId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then(async (comp: CompositionDetail | null) => {
-        if (!comp) return;
-        setLoadedCompositionId(comp.public_id);
-        setLoadedCompositionName(comp.name);
-        setCompositionName(comp.name);
-        setAccessRoute(comp.access_route_type);
-        setRequiresAnesthesia(comp.requires_anesthesia);
-        setAuxiliariesCount(comp.auxiliaries_count);
+    if (!initialCompositionId || !isLoaded) return;
 
-        if (!comp.sbn_procedure_id) return;
-        setLoadingIds(new Set([comp.sbn_procedure_id]));
-        try {
-          const detail: ProcedureDetail = await fetch(`/api/procedures/${comp.sbn_procedure_id}`).then((r) => r.json());
-          const proc: SBNProcedureOption = { id: detail.id, name: detail.name };
-          setSelectedProcedures([proc]);
-          setDetailsMap({ [detail.id]: detail });
-          // Only pre-select the codes the composition had saved.
-          const compositionCodeSet = new Set(comp.selected_codes.map((c) => c.cbhpm_code));
-          setSelectedCodes(compositionCodeSet);
-        } finally {
-          setLoadingIds(new Set());
-        }
+    const loadComposition = async () => {
+      const token = await getToken();
+      const res = await fetch(`/api/compositions/${initialCompositionId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-  // Runs only on mount.
+      const comp: CompositionDetail | null = res.ok ? await res.json() : null;
+      if (!comp) return;
+      setLoadedCompositionId(comp.public_id);
+      setLoadedCompositionName(comp.name);
+      setCompositionName(comp.name);
+      setAccessRoute(comp.access_route_type);
+      setRequiresAnesthesia(comp.requires_anesthesia);
+      setAuxiliariesCount(comp.auxiliaries_count);
+
+      if (!comp.sbn_procedure_id) return;
+      setLoadingIds(new Set([comp.sbn_procedure_id]));
+      try {
+        const detail: ProcedureDetail = await fetch(`/api/procedures/${comp.sbn_procedure_id}`).then((r) => r.json());
+        const proc: SBNProcedureOption = { id: detail.id, name: detail.name };
+        setSelectedProcedures([proc]);
+        setDetailsMap({ [detail.id]: detail });
+        const compositionCodeSet = new Set(comp.selected_codes.map((c) => c.cbhpm_code));
+        setSelectedCodes(compositionCodeSet);
+      } finally {
+        setLoadingIds(new Set());
+      }
+    };
+
+    loadComposition();
+  // Re-runs when auth loads so the token is available; initialCompositionId is stable.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isLoaded]);
 
   // ── Direct procedure load via ?sbn=<id> (from home page selection) ──────────
 
@@ -316,6 +325,7 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
     setSavingComposition(true);
     setCompositionSaveError(null);
     try {
+      const token = await getToken();
       const checkedCodes = allCbhpmCodes.filter((c) => selectedCodes.has(c.code));
       const payload = {
         name: trimmedName,
@@ -332,12 +342,17 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
       };
       const res = await fetch("/api/compositions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(payload),
       });
       if (res.ok) {
         setCompositionSaved(true);
         setShowSaveForm(false);
+      } else if (res.status === 401) {
+        setCompositionSaveError("Faça login para salvar composições.");
       } else {
         setCompositionSaveError("Não foi possível salvar. Tente novamente.");
       }
@@ -346,7 +361,7 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
     } finally {
       setSavingComposition(false);
     }
-  }, [compositionName, selectedProcedures, allCbhpmCodes, selectedCodes, accessRoute, auxiliariesCount, requiresAnesthesia]);
+  }, [compositionName, selectedProcedures, allCbhpmCodes, selectedCodes, accessRoute, auxiliariesCount, requiresAnesthesia, getToken]);
 
   // ── Update composition (loaded from URL) ──────────────────────────────────
 
@@ -355,6 +370,7 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
     setSavingComposition(true);
     setCompositionSaveError(null);
     try {
+      const token = await getToken();
       const checkedCodes = allCbhpmCodes.filter((c) => selectedCodes.has(c.code));
       const payload = {
         name: loadedCompositionName,
@@ -371,7 +387,10 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
       };
       const res = await fetch(`/api/compositions/${loadedCompositionId}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(payload),
       });
       if (res.ok) {
@@ -384,7 +403,7 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
     } finally {
       setSavingComposition(false);
     }
-  }, [loadedCompositionId, loadedCompositionName, selectedProcedures, allCbhpmCodes, selectedCodes, accessRoute, auxiliariesCount, requiresAnesthesia]);
+  }, [loadedCompositionId, loadedCompositionName, selectedProcedures, allCbhpmCodes, selectedCodes, accessRoute, auxiliariesCount, requiresAnesthesia, getToken]);
 
   // ── Share ─────────────────────────────────────────────────────────────────
 
@@ -441,18 +460,37 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
               <span className="block text-[10px] font-medium tracking-[0.3px] text-slate-500 dark:text-slate-400 leading-none">NEUROCIRURGIA</span>
             </div>
           </Link>
-          <button
-            onClick={toggle}
-            aria-checked={isDark}
-            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-            className="theme-switch relative inline-flex h-8 w-14 cursor-pointer items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            role="switch"
-            type="button"
-          >
-            <Sun aria-hidden="true" size={13} className="absolute left-2 text-amber-500 transition-opacity dark:opacity-35" />
-            <Moon aria-hidden="true" size={13} className="absolute right-2 text-slate-500 opacity-45 transition-opacity dark:text-cyan-200 dark:opacity-100" />
-            <span aria-hidden="true" className={`theme-switch-thumb absolute top-1 h-6 w-6 rounded-full transition-transform duration-200 ${isDark ? "translate-x-7" : "translate-x-1"}`} />
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Auth control */}
+            {isLoaded && (
+              isSignedIn ? (
+                <UserButton />
+              ) : (
+                <SignInButton mode="modal">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-colors"
+                  >
+                    <LogIn size={13} aria-hidden="true" />
+                    Entrar
+                  </button>
+                </SignInButton>
+              )
+            )}
+            {/* Theme toggle */}
+            <button
+              onClick={toggle}
+              aria-checked={isDark}
+              aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+              className="theme-switch relative inline-flex h-8 w-14 cursor-pointer items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              role="switch"
+              type="button"
+            >
+              <Sun aria-hidden="true" size={13} className="absolute left-2 text-amber-500 transition-opacity dark:opacity-35" />
+              <Moon aria-hidden="true" size={13} className="absolute right-2 text-slate-500 opacity-45 transition-opacity dark:text-cyan-200 dark:opacity-100" />
+              <span aria-hidden="true" className={`theme-switch-thumb absolute top-1 h-6 w-6 rounded-full transition-transform duration-200 ${isDark ? "translate-x-7" : "translate-x-1"}`} />
+            </button>
+          </div>
         </nav>
       </div>
 
@@ -842,7 +880,17 @@ function ProcedureContent({ initialQuery, initialSbnId, initialRoute, initialCom
                   </button>
 
                   {/* ── Composition save / update area ── */}
-                  {canSaveComposition && (
+                  {canSaveComposition && !isSignedIn && isLoaded && (
+                    <SignInButton mode="modal">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 dark:border-slate-700 px-4 py-3 text-sm font-semibold text-slate-600 dark:text-slate-300 transition-all hover:bg-slate-50 dark:hover:bg-slate-800/50 active:scale-[0.98]"
+                      >
+                        <LogIn size={16} /> Entrar para salvar composição
+                      </button>
+                    </SignInButton>
+                  )}
+                  {canSaveComposition && isSignedIn && (
                     loadedCompositionId ? (
                       /* Update flow: composition was loaded from URL */
                       compositionSaved ? (

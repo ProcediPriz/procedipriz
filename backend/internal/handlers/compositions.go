@@ -63,6 +63,17 @@ func reqToComposition(req generated.SaveCompositionRequest) models.Composition {
 	}
 }
 
+// requirePhysician extracts the physician ID from the request context.
+// If not present (auth middleware was not applied), it writes 401 and returns ("", false).
+func requirePhysician(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id, ok := physicianIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	return id, true
+}
+
 // makeSaveCompositionHandler handles POST /api/compositions.
 func makeSaveCompositionHandler(repo repository.Repository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -70,19 +81,20 @@ func makeSaveCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-
+		physicianID, ok := requirePhysician(w, r)
+		if !ok {
+			return
+		}
 		req, ok := decodeAndValidateComposition(w, r)
 		if !ok {
 			return
 		}
-
-		saved, err := repo.SaveComposition(reqToComposition(req))
+		saved, err := repo.SaveComposition(reqToComposition(req), physicianID)
 		if err != nil {
 			log.Printf("save composition: %v", err)
 			http.Error(w, "failed to save composition", http.StatusInternalServerError)
 			return
 		}
-
 		respondJSON(w, http.StatusCreated, generated.SaveCompositionResponse{
 			PublicID:  saved.PublicID,
 			CreatedAt: saved.CreatedAt,
@@ -93,7 +105,11 @@ func makeSaveCompositionHandler(repo repository.Repository) http.HandlerFunc {
 // makeListCompositionsHandler handles GET /api/compositions.
 func makeListCompositionsHandler(repo repository.Repository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		comps, err := repo.ListCompositions()
+		physicianID, ok := requirePhysician(w, r)
+		if !ok {
+			return
+		}
+		comps, err := repo.ListCompositions(physicianID)
 		if err != nil {
 			log.Printf("list compositions: %v", err)
 			http.Error(w, "failed to list compositions", http.StatusInternalServerError)
@@ -124,8 +140,11 @@ func makeGetCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "missing composition id", http.StatusBadRequest)
 			return
 		}
-
-		comp, err := repo.GetCompositionByPublicID(publicID)
+		physicianID, ok := requirePhysician(w, r)
+		if !ok {
+			return
+		}
+		comp, err := repo.GetCompositionByPublicID(publicID, physicianID)
 		if err != nil {
 			log.Printf("get composition %q: %v", publicID, err)
 			http.Error(w, "failed to retrieve composition", http.StatusInternalServerError)
@@ -135,7 +154,6 @@ func makeGetCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "composition not found", http.StatusNotFound)
 			return
 		}
-
 		codes := make([]generated.SelectedCode, 0, len(comp.SelectedCodes))
 		for _, c := range comp.SelectedCodes {
 			codes = append(codes, generated.SelectedCode{
@@ -144,7 +162,6 @@ func makeGetCompositionHandler(repo repository.Repository) http.HandlerFunc {
 				Porte:       c.Porte,
 			})
 		}
-
 		respondJSON(w, http.StatusOK, generated.CompositionDetail{
 			PublicID:           comp.PublicID,
 			Name:               comp.Name,
@@ -168,13 +185,15 @@ func makeUpdateCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "missing composition id", http.StatusBadRequest)
 			return
 		}
-
+		physicianID, ok := requirePhysician(w, r)
+		if !ok {
+			return
+		}
 		req, ok := decodeAndValidateComposition(w, r)
 		if !ok {
 			return
 		}
-
-		updated, err := repo.UpdateComposition(publicID, reqToComposition(req))
+		updated, err := repo.UpdateComposition(publicID, reqToComposition(req), physicianID)
 		if err != nil {
 			log.Printf("update composition %q: %v", publicID, err)
 			http.Error(w, "failed to update composition", http.StatusInternalServerError)
@@ -184,7 +203,6 @@ func makeUpdateCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "composition not found", http.StatusNotFound)
 			return
 		}
-
 		codes := make([]generated.SelectedCode, 0, len(updated.SelectedCodes))
 		for _, c := range updated.SelectedCodes {
 			codes = append(codes, generated.SelectedCode{
@@ -193,7 +211,6 @@ func makeUpdateCompositionHandler(repo repository.Repository) http.HandlerFunc {
 				Porte:       c.Porte,
 			})
 		}
-
 		respondJSON(w, http.StatusOK, generated.CompositionDetail{
 			PublicID:           updated.PublicID,
 			Name:               updated.Name,
@@ -217,8 +234,11 @@ func makeDeleteCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "missing composition id", http.StatusBadRequest)
 			return
 		}
-
-		deleted, err := repo.DeleteCompositionByPublicID(publicID)
+		physicianID, ok := requirePhysician(w, r)
+		if !ok {
+			return
+		}
+		deleted, err := repo.DeleteCompositionByPublicID(publicID, physicianID)
 		if err != nil {
 			log.Printf("delete composition %q: %v", publicID, err)
 			http.Error(w, "failed to delete composition", http.StatusInternalServerError)
@@ -228,16 +248,15 @@ func makeDeleteCompositionHandler(repo repository.Repository) http.HandlerFunc {
 			http.Error(w, "composition not found", http.StatusNotFound)
 			return
 		}
-
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 // makeCompositionsCollectionHandler dispatches GET → list, POST → save on /api/compositions.
-func makeCompositionsCollectionHandler(repo repository.Repository) http.HandlerFunc {
+func makeCompositionsCollectionHandler(repo repository.Repository) http.Handler {
 	save := makeSaveCompositionHandler(repo)
 	list := makeListCompositionsHandler(repo)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
 			save(w, r)
@@ -246,15 +265,15 @@ func makeCompositionsCollectionHandler(repo repository.Repository) http.HandlerF
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	}
+	})
 }
 
 // makeCompositionItemHandler dispatches GET/PUT/DELETE on /api/compositions/{id}.
-func makeCompositionItemHandler(repo repository.Repository) http.HandlerFunc {
+func makeCompositionItemHandler(repo repository.Repository) http.Handler {
 	get := makeGetCompositionHandler(repo)
 	put := makeUpdateCompositionHandler(repo)
 	del := makeDeleteCompositionHandler(repo)
-	return func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			get(w, r)
@@ -265,5 +284,5 @@ func makeCompositionItemHandler(repo repository.Repository) http.HandlerFunc {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-	}
+	})
 }

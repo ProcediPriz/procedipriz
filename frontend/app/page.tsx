@@ -1,7 +1,8 @@
 "use client";
 
-import { BookmarkCheck, Search, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { SignInButton, UserButton, useAuth } from "@clerk/nextjs";
+import { BookmarkCheck, LogIn, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -35,7 +36,6 @@ const EXAMPLES = [
 
 type ProcedureHit = { id: string; name: string };
 
-// Mirrors generated.CompositionItem from the backend.
 type CompositionItem = {
   public_id: string;
   name: string;
@@ -51,6 +51,7 @@ type CompositionItem = {
 
 export default function Home() {
   const router = useRouter();
+  const { isLoaded, isSignedIn, getToken } = useAuth();
   const [activeTab, setActiveTab] = useState<"search" | "compositions">("search");
 
   // Search state
@@ -68,27 +69,36 @@ export default function Home() {
   const [compositions, setCompositions] = useState<CompositionItem[]>([]);
   const [compositionsLoaded, setCompositionsLoaded] = useState(false);
 
-  // ── Fetch compositions ─────────────────────────────────────────────────────
+  // ── Fetch compositions (auth-aware) ───────────────────────────────────────
 
-  const fetchCompositions = async () => {
+  const fetchCompositions = useCallback(async () => {
+    if (!isSignedIn) {
+      setCompositions([]);
+      setCompositionsLoaded(true);
+      return;
+    }
     setCompositionsLoaded(false);
     try {
-      const res = await fetch("/api/compositions");
+      const token = await getToken();
+      const res = await fetch("/api/compositions", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       setCompositions(res.ok ? await res.json() : []);
     } catch {
       setCompositions([]);
     } finally {
       setCompositionsLoaded(true);
     }
-  };
+  }, [isSignedIn, getToken]);
 
-  // Eager load on mount so the badge count is populated immediately.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { fetchCompositions(); }, []);
-
-  // Re-fetch each time the tab is opened to pick up newly saved compositions.
+  // Eager load when auth is ready so the badge count is populated.
   useEffect(() => {
-    if (activeTab === "compositions") fetchCompositions();
+    if (isLoaded) fetchCompositions();
+  }, [isLoaded, fetchCompositions]);
+
+  // Re-fetch each time the compositions tab is opened.
+  useEffect(() => {
+    if (activeTab === "compositions" && isLoaded) fetchCompositions();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -189,6 +199,42 @@ export default function Home() {
     >
       <div style={{ width: "100%", maxWidth: "620px" }}>
 
+        {/* ── Auth bar ── */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+            marginBottom: "10px",
+            minHeight: "32px",
+          }}
+        >
+          {isLoaded && (
+            isSignedIn ? (
+              <UserButton />
+            ) : (
+              <SignInButton mode="modal">
+                <button
+                  type="button"
+                  style={{
+                    display: "flex", alignItems: "center", gap: "6px",
+                    padding: "6px 14px", borderRadius: "8px",
+                    border: "1.5px solid rgba(255,255,255,0.6)",
+                    background: "rgba(255,255,255,0.55)",
+                    backdropFilter: "blur(10px)",
+                    WebkitBackdropFilter: "blur(10px)",
+                    fontSize: "12.5px", fontWeight: 600, fontFamily: "inherit",
+                    color: T.primary, cursor: "pointer",
+                  }}
+                >
+                  <LogIn size={13} aria-hidden="true" />
+                  Entrar
+                </button>
+              </SignInButton>
+            )
+          )}
+        </div>
+
         {/* ── Tab bar ── */}
         <div
           style={{
@@ -210,7 +256,7 @@ export default function Home() {
           <TabBtn active={activeTab === "compositions"} onClick={() => setActiveTab("compositions")}>
             <BookmarkCheck size={13} aria-hidden="true" />
             Minhas composições
-            {compositions.length > 0 && activeTab !== "compositions" && (
+            {isSignedIn && compositions.length > 0 && activeTab !== "compositions" && (
               <span
                 style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
@@ -371,18 +417,73 @@ export default function Home() {
               </div>
             </>
           ) : (
-            <CompositionList
-              compositions={compositions}
-              loaded={compositionsLoaded}
-              onDelete={(publicID) =>
-                setCompositions((prev) => prev.filter((c) => c.public_id !== publicID))
-              }
-            />
+            /* ── Compositions tab ── */
+            !isLoaded ? (
+              <div style={{ textAlign: "center", padding: "40px 0" }}>
+                <div
+                  style={{
+                    width: "20px", height: "20px", margin: "0 auto",
+                    border: "2px solid #CBD5E1", borderTopColor: T.primary,
+                    borderRadius: "50%", animation: "spin 0.7s linear infinite",
+                  }}
+                />
+              </div>
+            ) : !isSignedIn ? (
+              <SignInGate />
+            ) : (
+              <CompositionList
+                compositions={compositions}
+                loaded={compositionsLoaded}
+                getToken={getToken}
+                onDelete={(publicID) =>
+                  setCompositions((prev) => prev.filter((c) => c.public_id !== publicID))
+                }
+              />
+            )
           )}
 
         </div>
       </div>
     </main>
+  );
+}
+
+// ─── Sign-in gate ─────────────────────────────────────────────────────────────
+
+function SignInGate() {
+  return (
+    <div style={{ textAlign: "center", padding: "40px 0" }}>
+      <div
+        style={{
+          width: "48px", height: "48px", margin: "0 auto 18px",
+          borderRadius: "50%", backgroundColor: "#F1F5F9",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        <LogIn size={22} aria-hidden="true" style={{ color: T.muted }} />
+      </div>
+      <p style={{ margin: "0 0 6px", fontSize: "14px", fontWeight: 600, color: T.primary }}>
+        Entre para ver suas composições
+      </p>
+      <p style={{ margin: "0 0 22px", fontSize: "12.5px", lineHeight: 1.6, color: T.muted }}>
+        Suas composições são salvas na sua conta e ficam disponíveis em qualquer dispositivo.
+      </p>
+      <SignInButton mode="modal">
+        <button
+          type="button"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "7px",
+            padding: "10px 24px", borderRadius: "10px", border: "none",
+            backgroundColor: T.btnBg, color: "#FFFFFF",
+            fontSize: "13.5px", fontWeight: 600, fontFamily: "inherit",
+            cursor: "pointer",
+          }}
+        >
+          <LogIn size={14} aria-hidden="true" />
+          Entrar
+        </button>
+      </SignInButton>
+    </div>
   );
 }
 
@@ -413,10 +514,12 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 function CompositionList({
   compositions,
   loaded,
+  getToken,
   onDelete,
 }: {
   compositions: CompositionItem[];
   loaded: boolean;
+  getToken: () => Promise<string | null>;
   onDelete: (publicID: string) => void;
 }) {
   const [pendingDelete, setPendingDelete] = useState<CompositionItem | null>(null);
@@ -426,7 +529,11 @@ function CompositionList({
     if (!pendingDelete) return;
     setDeleting(true);
     try {
-      const res = await fetch(`/api/compositions/${pendingDelete.public_id}`, { method: "DELETE" });
+      const token = await getToken();
+      const res = await fetch(`/api/compositions/${pendingDelete.public_id}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (res.ok || res.status === 404) {
         onDelete(pendingDelete.public_id);
         setPendingDelete(null);
@@ -465,7 +572,7 @@ function CompositionList({
         </p>
         <p style={{ margin: 0, fontSize: "12.5px", lineHeight: 1.6, color: T.muted }}>
           Monte uma composição e clique em{" "}
-          <span style={{ fontWeight: 600, color: T.primary }}>"Salvar composição"</span>{" "}
+          <span style={{ fontWeight: 600, color: T.primary }}>&ldquo;Salvar composição&rdquo;</span>{" "}
           para guardá-la aqui.
         </p>
       </div>

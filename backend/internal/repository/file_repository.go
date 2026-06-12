@@ -3,6 +3,7 @@ package repository
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -25,12 +26,17 @@ type flatEntry struct {
 }
 
 // FileRepository is a Repository backed by the embedded procedures.json
-// and in-memory stores for compositions and calculations (development/testing).
+// and in-memory stores for physicians, compositions, and calculations (development/testing).
 type FileRepository struct {
 	// procedures is the ordered list of unique SBN procedures.
 	procedures []models.ProcedureWithCodes
 	// byID is a fast O(1) lookup from string ID → index.
 	byID map[string]int
+
+	// physicianMu guards the in-memory physician account stores.
+	physicianMu       sync.RWMutex
+	physiciansByClerk map[string]*models.PhysicianAccount // keyed by clerk_user_id
+	physiciansByID    map[string]*models.PhysicianAccount // keyed by internal UUID
 
 	// composeMu guards the in-memory composition store.
 	composeMu    sync.RWMutex
@@ -98,10 +104,12 @@ func buildIndex(flat []flatEntry) *FileRepository {
 	}
 
 	return &FileRepository{
-		procedures:   procedures,
-		byID:         byID,
-		compositions: make(map[string]*models.Composition),
-		calculations: make(map[string]*models.Calculation),
+		procedures:        procedures,
+		byID:              byID,
+		physiciansByClerk: make(map[string]*models.PhysicianAccount),
+		physiciansByID:    make(map[string]*models.PhysicianAccount),
+		compositions:      make(map[string]*models.Composition),
+		calculations:      make(map[string]*models.Calculation),
 	}
 }
 
@@ -183,10 +191,51 @@ func idFromIndex(i int) string {
 	return string(buf)
 }
 
+// ── Physician accounts ────────────────────────────────────────────────────────
+
+// FindOrCreatePhysician looks up or creates an in-memory physician account.
+func (r *FileRepository) FindOrCreatePhysician(clerkUserID, email, name string) (*models.PhysicianAccount, error) {
+	r.physicianMu.RLock()
+	if p, ok := r.physiciansByClerk[clerkUserID]; ok {
+		r.physicianMu.RUnlock()
+		cp := *p
+		return &cp, nil
+	}
+	r.physicianMu.RUnlock()
+
+	id, err := models.GeneratePublicID()
+	if err != nil {
+		return nil, fmt.Errorf("generate physician id: %w", err)
+	}
+	now := time.Now().UTC()
+	p := &models.PhysicianAccount{
+		ID:          id,
+		ClerkUserID: clerkUserID,
+		Email:       email,
+		Name:        name,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	r.physicianMu.Lock()
+	// Double-check after acquiring write lock.
+	if existing, ok := r.physiciansByClerk[clerkUserID]; ok {
+		r.physicianMu.Unlock()
+		cp := *existing
+		return &cp, nil
+	}
+	r.physiciansByClerk[clerkUserID] = p
+	r.physiciansByID[id] = p
+	r.physicianMu.Unlock()
+
+	cp := *p
+	return &cp, nil
+}
+
 // ── Composition CRUD ──────────────────────────────────────────────────────────
 
 // SaveComposition stores a new composition in-memory and returns the populated record.
-func (r *FileRepository) SaveComposition(comp models.Composition) (*models.Composition, error) {
+func (r *FileRepository) SaveComposition(comp models.Composition, physicianID string) (*models.Composition, error) {
 	publicID, err := models.GeneratePublicID()
 	if err != nil {
 		return nil, err
@@ -194,6 +243,7 @@ func (r *FileRepository) SaveComposition(comp models.Composition) (*models.Compo
 	now := time.Now().UTC()
 	comp.ID = "file-" + publicID
 	comp.PublicID = publicID
+	comp.PhysicianID = physicianID
 	comp.CreatedAt = now
 	comp.UpdatedAt = now
 
@@ -205,13 +255,16 @@ func (r *FileRepository) SaveComposition(comp models.Composition) (*models.Compo
 	return &result, nil
 }
 
-// ListCompositions returns all in-memory compositions ordered newest-first.
-func (r *FileRepository) ListCompositions() ([]models.CompositionSummary, error) {
+// ListCompositions returns all in-memory compositions owned by physicianID, newest-first.
+func (r *FileRepository) ListCompositions(physicianID string) ([]models.CompositionSummary, error) {
 	r.composeMu.RLock()
 	defer r.composeMu.RUnlock()
 
 	summaries := make([]models.CompositionSummary, 0, len(r.compositions))
 	for _, c := range r.compositions {
+		if c.PhysicianID != physicianID {
+			continue
+		}
 		summaries = append(summaries, models.CompositionSummary{
 			PublicID:           c.PublicID,
 			Name:               c.Name,
@@ -229,28 +282,29 @@ func (r *FileRepository) ListCompositions() ([]models.CompositionSummary, error)
 	return summaries, nil
 }
 
-// GetCompositionByPublicID returns the in-memory composition or nil if not found.
-func (r *FileRepository) GetCompositionByPublicID(publicID string) (*models.Composition, error) {
+// GetCompositionByPublicID returns the composition only when it exists and belongs to physicianID.
+func (r *FileRepository) GetCompositionByPublicID(publicID, physicianID string) (*models.Composition, error) {
 	r.composeMu.RLock()
 	c, ok := r.compositions[publicID]
 	r.composeMu.RUnlock()
-	if !ok {
+	if !ok || c.PhysicianID != physicianID {
 		return nil, nil
 	}
 	result := *c
 	return &result, nil
 }
 
-// UpdateComposition replaces a composition's editable fields. Returns nil, nil if not found.
-func (r *FileRepository) UpdateComposition(publicID string, comp models.Composition) (*models.Composition, error) {
+// UpdateComposition replaces a composition's editable fields only when it belongs to physicianID.
+func (r *FileRepository) UpdateComposition(publicID string, comp models.Composition, physicianID string) (*models.Composition, error) {
 	r.composeMu.Lock()
 	defer r.composeMu.Unlock()
 	existing, ok := r.compositions[publicID]
-	if !ok {
+	if !ok || existing.PhysicianID != physicianID {
 		return nil, nil
 	}
 	comp.ID = existing.ID
 	comp.PublicID = publicID
+	comp.PhysicianID = physicianID
 	comp.CreatedAt = existing.CreatedAt
 	comp.UpdatedAt = time.Now().UTC()
 	r.compositions[publicID] = &comp
@@ -258,11 +312,12 @@ func (r *FileRepository) UpdateComposition(publicID string, comp models.Composit
 	return &result, nil
 }
 
-// DeleteCompositionByPublicID removes the composition. Returns (true, nil) when deleted.
-func (r *FileRepository) DeleteCompositionByPublicID(publicID string) (bool, error) {
+// DeleteCompositionByPublicID removes the composition only when it belongs to physicianID.
+func (r *FileRepository) DeleteCompositionByPublicID(publicID, physicianID string) (bool, error) {
 	r.composeMu.Lock()
 	defer r.composeMu.Unlock()
-	if _, ok := r.compositions[publicID]; !ok {
+	c, ok := r.compositions[publicID]
+	if !ok || c.PhysicianID != physicianID {
 		return false, nil
 	}
 	delete(r.compositions, publicID)

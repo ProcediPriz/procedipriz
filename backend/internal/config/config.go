@@ -3,6 +3,18 @@ package config
 
 import "os"
 
+// ClerkConfig holds Clerk authentication parameters used to verify JWTs.
+type ClerkConfig struct {
+	// JWKSURL is the full URL to the Clerk JWKS endpoint, e.g.
+	// https://<clerk-frontend-api>/.well-known/jwks.json
+	// Required in production; omit only for local file-repo dev mode.
+	JWKSURL string
+
+	// Issuer is the expected JWT iss claim, e.g. https://<clerk-frontend-api>.
+	// When empty, issuer validation is skipped (dev convenience only).
+	Issuer string
+}
+
 // Config holds all environment-driven configuration for the API server.
 type Config struct {
 	// DatabaseURL is the Neon/PostgreSQL connection string (e.g. postgres://…).
@@ -11,6 +23,9 @@ type Config struct {
 
 	// Port is the TCP port the HTTP server listens on.
 	Port string
+
+	// Clerk holds JWT verification parameters for the Clerk authentication provider.
+	Clerk ClerkConfig
 }
 
 // Load reads configuration from environment variables.
@@ -25,5 +40,9 @@ func Load() Config {
 	return Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Port:        port,
+		Clerk: ClerkConfig{
+			JWKSURL: os.Getenv("CLERK_JWKS_URL"),
+			Issuer:  os.Getenv("CLERK_ISSUER"),
+		},
 	}
 }

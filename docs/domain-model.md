@@ -12,13 +12,14 @@ One SBN surgical package maps to **one or more** CBHPM billable codes. Each code
 
 | Concept | Description |
 |---|---|
+| **Physician Account** | An authenticated Afere user. Maps a Clerk identity (JWT `sub`) to an internal UUID. Created automatically on first sign-in. |
 | **SBN Procedure** | A named surgical package published by the SBN. Has a code and a human-readable name. |
 | **CBHPM Code** | A billable line item from the national procedure table. Has a code, description, and an intrinsic porte. |
 | **Porte** | A complexity class (e.g. `7A`, `8B`) with a fixed BRL value defined by CBHPM 2025/2026 (Faixa Original). Read-only — the physician cannot change a code's porte. |
 | **AccessRouteType** | `same` (CBHPM 4.1) or `different` (CBHPM 4.2). Drives the multi-procedure discount rate. |
-| **Composition** | A reusable surgical template: SBN procedure + selected CBHPM codes + access route + anesthesia + aux count + user-defined name. **Contains no financial values.** Values are always recalculated fresh. |
+| **Composition** | A reusable surgical template owned by a physician: SBN procedure + selected CBHPM codes + access route + anesthesia + aux count + user-defined name. **Contains no financial values.** Values are always recalculated fresh. |
 | **Calculation** | The computed monetary breakdown of a composition or manual selection. Always derived on the fly from current CBHPM porte values — never stored as the primary artifact. |
-| **Shared Calculation** | A snapshot of a completed calculation stored in the `calculations` table for external review via a shareable URL. Legacy persistence model; used only for the share-report flow. |
+| **Shared Calculation** | A snapshot of a completed calculation stored in the `calculations` table for external review via a shareable URL. Legacy persistence model; used only for the share-report flow. Public — no authentication required. |
 | **Valuation** | Synonym for Calculation in the UI context. |
 
 ---
@@ -85,9 +86,18 @@ final_total = surgeon_fee + Σ(auxiliary_fees) + anesthesiologist_fee
 ## Database Schema
 
 ```
+physician_accounts                         — migration 009 (v2.4.0)
+  id            UUID PK (gen_random_uuid())
+  clerk_user_id TEXT UNIQUE NOT NULL       — Clerk JWT sub claim
+  email         TEXT                       — nullable; from Clerk profile
+  name          TEXT                       — nullable; from Clerk profile
+  created_at    TIMESTAMPTZ DEFAULT now()
+  updated_at    TIMESTAMPTZ DEFAULT now()
+
 compositions
   id                  UUID PK (gen_random_uuid())
   public_id           UUID UNIQUE NOT NULL
+  physician_id        UUID REFERENCES physician_accounts(id)  — migration 010; nullable for legacy rows
   name                TEXT NOT NULL
   sbn_procedure_id    TEXT
   sbn_procedure_name  TEXT NOT NULL

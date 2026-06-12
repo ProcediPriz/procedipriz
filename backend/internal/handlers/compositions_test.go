@@ -12,6 +12,14 @@ import (
 	"afere/backend/internal/repository"
 )
 
+// testMux builds a mux with the test auth middleware injecting testClerkUserID.
+func testMux(repo *repository.FileRepository, testClerkUserID string) *http.ServeMux {
+	mux := http.NewServeMux()
+	auth := handlers.MakeTestAuthMiddleware(repo, testClerkUserID)
+	handlers.RegisterRoutes(mux, repo, auth)
+	return mux
+}
+
 // compositionPayload builds a minimal valid save/update request body.
 func compositionPayload(name string) []byte {
 	req := generated.SaveCompositionRequest{
@@ -44,8 +52,8 @@ func saveComposition(t *testing.T, mux *http.ServeMux, payload []byte) string {
 }
 
 func TestSaveComposition(t *testing.T) {
-	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repository.NewFileRepository())
+	repo := repository.NewFileRepository()
+	mux := testMux(repo, "user-save-test")
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/compositions", bytes.NewReader(compositionPayload("Composição teste"))))
@@ -63,8 +71,8 @@ func TestSaveComposition(t *testing.T) {
 }
 
 func TestListCompositions(t *testing.T) {
-	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repository.NewFileRepository())
+	repo := repository.NewFileRepository()
+	mux := testMux(repo, "user-list-test")
 
 	saveComposition(t, mux, compositionPayload("Alpha"))
 	saveComposition(t, mux, compositionPayload("Beta"))
@@ -85,8 +93,8 @@ func TestListCompositions(t *testing.T) {
 }
 
 func TestGetComposition(t *testing.T) {
-	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repository.NewFileRepository())
+	repo := repository.NewFileRepository()
+	mux := testMux(repo, "user-get-test")
 
 	id := saveComposition(t, mux, compositionPayload("Minha composição"))
 
@@ -112,8 +120,8 @@ func TestGetComposition(t *testing.T) {
 }
 
 func TestUpdateComposition(t *testing.T) {
-	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repository.NewFileRepository())
+	repo := repository.NewFileRepository()
+	mux := testMux(repo, "user-update-test")
 
 	id := saveComposition(t, mux, compositionPayload("Original"))
 
@@ -149,8 +157,8 @@ func TestUpdateComposition(t *testing.T) {
 }
 
 func TestDeleteComposition(t *testing.T) {
-	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repository.NewFileRepository())
+	repo := repository.NewFileRepository()
+	mux := testMux(repo, "user-delete-test")
 
 	id := saveComposition(t, mux, compositionPayload("Para apagar"))
 
@@ -166,5 +174,84 @@ func TestDeleteComposition(t *testing.T) {
 	mux.ServeHTTP(w2, httptest.NewRequest(http.MethodDelete, "/api/compositions/"+id, nil))
 	if w2.Code != http.StatusNotFound {
 		t.Errorf("expected 404 on second delete, got %d", w2.Code)
+	}
+}
+
+func TestUnauthenticatedCompositionRequest(t *testing.T) {
+	repo := repository.NewFileRepository()
+	// Real Clerk middleware with empty config: no token → immediate 401 without any JWKS fetch.
+	auth := handlers.MakeClerkAuthMiddleware(handlers.ClerkConfig{}, repo)
+	mux := http.NewServeMux()
+	handlers.RegisterRoutes(mux, repo, auth)
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/compositions"},
+		{http.MethodGet, "/api/compositions"},
+		{http.MethodGet, "/api/compositions/some-id"},
+		{http.MethodPut, "/api/compositions/some-id"},
+		{http.MethodDelete, "/api/compositions/some-id"},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, bytes.NewReader(compositionPayload("Test"))))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: expected 401, got %d", tc.method, tc.path, w.Code)
+		}
+	}
+}
+
+func TestUserCannotAccessOtherUserComposition(t *testing.T) {
+	repo := repository.NewFileRepository()
+	muxAlice := testMux(repo, "clerk-alice")
+	muxBob := testMux(repo, "clerk-bob")
+
+	// Alice creates a composition.
+	id := saveComposition(t, muxAlice, compositionPayload("Composição da Alice"))
+
+	// Bob tries GET — must receive 404 (no ownership leak).
+	w := httptest.NewRecorder()
+	muxBob.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/compositions/"+id, nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("GET: expected 404 (Bob cannot see Alice's composition), got %d", w.Code)
+	}
+
+	// Bob tries PUT — must receive 404.
+	w2 := httptest.NewRecorder()
+	muxBob.ServeHTTP(w2, httptest.NewRequest(http.MethodPut, "/api/compositions/"+id, bytes.NewReader(compositionPayload("Tentativa de sobrescrever"))))
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("PUT: expected 404 (Bob cannot update Alice's composition), got %d", w2.Code)
+	}
+
+	// Bob tries DELETE — must receive 404.
+	w3 := httptest.NewRecorder()
+	muxBob.ServeHTTP(w3, httptest.NewRequest(http.MethodDelete, "/api/compositions/"+id, nil))
+	if w3.Code != http.StatusNotFound {
+		t.Errorf("DELETE: expected 404 (Bob cannot delete Alice's composition), got %d", w3.Code)
+	}
+
+	// Alice can still GET her own composition.
+	w4 := httptest.NewRecorder()
+	muxAlice.ServeHTTP(w4, httptest.NewRequest(http.MethodGet, "/api/compositions/"+id, nil))
+	if w4.Code != http.StatusOK {
+		t.Errorf("GET: expected 200 (Alice can see her own composition), got %d", w4.Code)
+	}
+}
+
+func TestPublicCalculationsDoNotRequireAuth(t *testing.T) {
+	repo := repository.NewFileRepository()
+	// Real Clerk middleware with no JWKS: unauthenticated requests to calculation
+	// endpoints should still succeed (they are not protected).
+	auth := handlers.MakeClerkAuthMiddleware(handlers.ClerkConfig{}, repo)
+	mux := http.NewServeMux()
+	handlers.RegisterRoutes(mux, repo, auth)
+
+	// GET /api/calculations returns 200 without an Authorization header.
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/calculations", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for unauthenticated GET /api/calculations, got %d", w.Code)
 	}
 }

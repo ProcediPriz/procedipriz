@@ -29,11 +29,16 @@ func main() {
 		repo = repository.NewFileRepository()
 	}
 
+	auth := handlers.MakeClerkAuthMiddleware(handlers.ClerkConfig{
+		JWKSURL: cfg.Clerk.JWKSURL,
+		Issuer:  cfg.Clerk.Issuer,
+	}, repo)
+
 	mux := http.NewServeMux()
-	handlers.RegisterRoutes(mux, repo)
+	handlers.RegisterRoutes(mux, repo, auth)
 
 	addr := ":" + cfg.Port
-	log.Printf("Afere API is listening on %s 🚀", addr)
+	log.Printf("Afere API is listening on %s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
