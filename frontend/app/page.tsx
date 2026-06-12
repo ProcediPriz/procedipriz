@@ -30,6 +30,8 @@ const EXAMPLES = [
   "Craniotomia descompressiva",
   "Derivação ventrículo-peritoneal",
   "Aneurisma cerebral",
+  "Microdiscectomia",
+  "Hematoma subdural",
 ];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
